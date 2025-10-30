@@ -534,13 +534,14 @@ fi
 
 # Update DOCKERFILE if framework is VLLM
 if [[ $FRAMEWORK == "VLLM" ]]; then
-    # Use DGX-SPARK Dockerfile when:
-    # 1. Explicitly requested with --dgx-spark flag, OR
-    # 2. Building for ARM64 platform (DGX-SPARK requires Blackwell GPU support)
-    if [[ "$USE_DGX_SPARK" == "true" ]] || [[ "$PLATFORM" == *"linux/arm64"* ]]; then
+    # Use DGX-SPARK Dockerfile ONLY when explicitly requested with --dgx-spark flag
+    # (Removed auto-detection by ARM64 platform to allow testing standard Dockerfile on ARM64)
+    if [[ "$USE_DGX_SPARK" == "true" ]]; then
         DOCKERFILE=${SOURCE_DIR}/Dockerfile.vllm.dgx-spark
+        echo "Using DGX-SPARK specific Dockerfile"
     else
         DOCKERFILE=${SOURCE_DIR}/Dockerfile.vllm
+        echo "Using standard vLLM Dockerfile"
     fi
 elif [[ $FRAMEWORK == "TRTLLM" ]]; then
     DOCKERFILE=${SOURCE_DIR}/Dockerfile.trtllm
@@ -626,8 +627,8 @@ fi
 
 # Only pass BASE_IMAGE and BASE_IMAGE_TAG for non-DGX-SPARK builds
 # DGX-SPARK uses hardcoded base images in Dockerfile.vllm.dgx-spark
-# Skip these build args when building for DGX-SPARK
-if [[ ! (("$USE_DGX_SPARK" == "true") || ("$PLATFORM" == *"linux/arm64"* && $FRAMEWORK == "VLLM")) ]]; then
+# Skip these build args when building for DGX-SPARK (only when explicitly requested)
+if [[ "$USE_DGX_SPARK" != "true" ]]; then
     BUILD_ARGS+=" --build-arg BASE_IMAGE=$BASE_IMAGE --build-arg BASE_IMAGE_TAG=$BASE_IMAGE_TAG"
 fi
 

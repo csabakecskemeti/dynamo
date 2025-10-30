@@ -135,30 +135,63 @@ async def allocate_and_reserve_port(
 
 
 def get_host_ip() -> str:
-    """Get the IP address of the host.
-    This is needed for the side channel to work in multi-node deployments.
+    """Get the IP address of the host for multi-node deployments.
+    
+    Tries multiple methods to find the correct network IP:
+    1. Check for environment variable override (VLLM_NIXL_SIDE_CHANNEL_HOST)
+    2. Use socket connection to determine outbound IP
+    3. Fall back to hostname resolution
+    4. Fall back to 127.0.0.1 if all else fails
     """
+    # Method 1: Check if user explicitly set the IP (for multi-node setups)
+    env_host = os.environ.get("VLLM_NIXL_SIDE_CHANNEL_HOST")
+    if env_host:
+        logger.info(f"Using user-provided NIXL side channel host from environment: {env_host}")
+        return env_host
+    
+    # Method 2: Get IP by creating a socket connection (doesn't actually send data)
+    # This finds the IP that would be used to reach external networks
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            # Connect to a public DNS server (doesn't actually send packets)
+            s.connect(("8.8.8.8", 80))
+            host_ip = s.getsockname()[0]
+            
+            # Verify it's not localhost
+            if not host_ip.startswith("127."):
+                logger.info(f"Auto-detected network IP via socket: {host_ip}")
+                
+                # Test if we can bind to it
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as test_socket:
+                    test_socket.bind((host_ip, 0))
+                return host_ip
+    except socket.error as e:
+        logger.debug(f"Socket connection method failed: {e}, trying hostname resolution")
+    
+    # Method 3: Try hostname resolution (may return 127.0.0.1 in Docker)
     try:
         host_name = socket.gethostname()
-    except socket.error as e:
-        logger.warning(f"Failed to get hostname: {e}, falling back to '127.0.0.1'")
-        return "127.0.0.1"
-    else:
-        try:
-            # Get the IP address of the hostname - this is needed for the side channel to work in multi-node deployments
-            host_ip = socket.gethostbyname(host_name)
+        host_ip = socket.gethostbyname(host_name)
+        
+        # Only use if it's not localhost
+        if not host_ip.startswith("127."):
             # Test if the IP is actually usable by binding to it
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as test_socket:
                 test_socket.bind((host_ip, 0))
+            logger.info(f"Auto-detected IP via hostname resolution: {host_ip}")
             return host_ip
-        except socket.gaierror as e:
+        else:
             logger.warning(
-                f"Hostname '{host_name}' cannot be resolved: {e}, falling back to '127.0.0.1'"
+                f"Hostname '{host_name}' resolved to localhost ({host_ip}). "
+                f"For multi-node setups, set VLLM_NIXL_SIDE_CHANNEL_HOST environment variable."
             )
-            return "127.0.0.1"
-        except socket.error as e:
-            # If hostname is not usable for binding, fall back to localhost
-            logger.warning(
-                f"Hostname '{host_name}' is not usable for binding: {e}, falling back to '127.0.0.1'"
-            )
-            return "127.0.0.1"
+    except (socket.gaierror, socket.error) as e:
+        logger.debug(f"Hostname resolution failed: {e}")
+    
+    # Method 4: Fall back to localhost
+    logger.warning(
+        "Could not determine network IP, falling back to '127.0.0.1'. "
+        "Multi-node KV transfer will NOT work. "
+        "Set VLLM_NIXL_SIDE_CHANNEL_HOST environment variable to your node's IP address."
+    )
+    return "127.0.0.1"
