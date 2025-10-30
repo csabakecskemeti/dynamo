@@ -26,6 +26,7 @@ RUN_PREFIX=
 PLATFORM=linux/amd64
 USE_DGX_SPARK=false
 USE_VLLM_010=false
+USE_VLLM_010_PREBUILT=false
 
 # Get short commit hash
 commit_id=$(git rev-parse --short HEAD)
@@ -356,6 +357,13 @@ get_options() {
             fi
             USE_VLLM_010=true
             ;;
+        --vllm-0.10-prebuilt)
+            if [ -n "$2" ] && [[ "$2" != --* ]]; then
+                echo "ERROR: --vllm-0.10-prebuilt does not take any argument"
+                exit 1
+            fi
+            USE_VLLM_010_PREBUILT=true
+            ;;
          -?*)
             error 'ERROR: Unknown option: ' "$1"
             ;;
@@ -500,7 +508,8 @@ show_help() {
     echo "  [--sccache-region S3 region for sccache (required with --use-sccache)]"
     echo "  [--vllm-max-jobs number of parallel jobs for compilation (only used by vLLM framework)]"
     echo "  [--dgx-spark Use DGX-SPARK specific Dockerfile for vLLM (Blackwell GPU support, auto-detected for ARM64)]"
-    echo "  [--vllm-0.10 Use vLLM 0.10.0 specific Dockerfile for backward compatibility (x86_64 amd64 systems with RTX GPUs)]"
+    echo "  [--vllm-0.10 Build vLLM 0.10.0 from source (x86_64 amd64 systems with RTX GPUs, no DeepGEMM)]"
+    echo "  [--vllm-0.10-prebuilt Use NVIDIA pre-built vLLM 0.10.0 container (faster build, x86_64 amd64)]"
     echo ""
     echo "  Note: When using --use-sccache, AWS credentials must be set:"
     echo "        export AWS_ACCESS_KEY_ID=your_access_key"
@@ -548,9 +557,12 @@ if [[ $FRAMEWORK == "VLLM" ]]; then
     if [[ "$USE_DGX_SPARK" == "true" ]]; then
         DOCKERFILE=${SOURCE_DIR}/Dockerfile.vllm.dgx-spark
         echo "Using DGX-SPARK specific Dockerfile"
+    elif [[ "$USE_VLLM_010_PREBUILT" == "true" ]]; then
+        DOCKERFILE=${SOURCE_DIR}/Dockerfile.vllm_0.10.0_prebuilt
+        echo "Using vLLM 0.10.0 pre-built NVIDIA container Dockerfile (fast build)"
     elif [[ "$USE_VLLM_010" == "true" ]]; then
         DOCKERFILE=${SOURCE_DIR}/Dockerfile.vllm_0.10.0
-        echo "Using vLLM 0.10.0 specific Dockerfile"
+        echo "Using vLLM 0.10.0 build-from-source Dockerfile"
     else
         DOCKERFILE=${SOURCE_DIR}/Dockerfile.vllm
         echo "Using standard vLLM Dockerfile"
