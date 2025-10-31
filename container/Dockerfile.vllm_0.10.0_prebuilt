@@ -2,34 +2,32 @@
 # SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# Pre-built vLLM 0.10.x Dockerfile using NVIDIA's vLLM container
-# Uses NVIDIA's pre-built vLLM container that supports CUDA 12.8
-# Similar approach to DGX-SPARK but for x86_64 amd64 with RTX GPUs
+# Fast-build vLLM 0.10.x Dockerfile using PyPI wheels
+# Installs vLLM 0.10.2 from PyPI (no source build required)
+# Uses vLLM base image for optimized CUDA dependencies
+# For x86_64 amd64 systems with RTX GPUs (Ampere/Ada architectures)
 
-# NVIDIA vLLM container versions:
-# - 24.08-py3: vLLM 0.9.x with CUDA 12.5
-# - 24.09-py3: vLLM 0.10.0 with CUDA 12.6
-# - 24.10-py3: vLLM 0.10.0 with CUDA 12.6
-# We use 24.09 or 24.10 for vLLM 0.10.0 compatibility
-ARG BASE_IMAGE="nvcr.io/nvidia/vllm"
-ARG BASE_IMAGE_TAG="24.10-py3"
+# Use vLLM official image as base (has optimized CUDA libraries and dependencies)
+# Note: We install vLLM from PyPI since base doesn't have it as importable package
+ARG BASE_IMAGE="vllm/vllm-openai"
+ARG BASE_IMAGE_TAG="v0.10.2"
 
 ARG DYNAMO_BASE_IMAGE="dynamo:latest-none"
 FROM ${DYNAMO_BASE_IMAGE} AS dynamo_base
 
 ########################################################
-########## Runtime Image (based on NVIDIA vLLM) #######
+######## Runtime Image (based on vLLM official) ########
 ########################################################
 #
-# PURPOSE: Production runtime environment with pre-built vLLM 0.10.0
+# PURPOSE: Production runtime environment with vLLM 0.10.2 from PyPI
 #
-# This stage uses NVIDIA's pre-built vLLM container that already includes:
-# - vLLM 0.10.0 with CUDA 12.6/12.8 support (compatible with CUDA 12.x)
-# - RTX 3080/3090 GPU support (Ampere architecture)
-# - All necessary GPU acceleration libraries
+# This stage uses the official vLLM Docker image base that includes:
+# - CUDA 12.x support and optimized libraries
+# - RTX GPU support (Ampere/Ada architectures)
 # - PyTorch and dependencies pre-configured
 #
-# We add Dynamo's customizations on top:
+# We install vLLM 0.10.2 from PyPI and add Dynamo's customizations:
+# - vLLM 0.10.2 (installed from PyPI wheels, matches DGX version)
 # - Dynamo runtime libraries
 # - NIXL for KV cache transfer
 # - Custom backend integrations
@@ -41,10 +39,11 @@ WORKDIR /workspace
 ENV DYNAMO_HOME=/opt/dynamo
 ENV VIRTUAL_ENV=/opt/dynamo/venv
 ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
-# Add system Python site-packages to PYTHONPATH so we can use NVIDIA's vLLM
-ENV PYTHONPATH="/usr/local/lib/python3.12/dist-packages:${PYTHONPATH}"
+# Add system Python site-packages to PYTHONPATH so we can use vLLM from base image
+# vLLM official images typically install to /usr/local/lib/pythonX.Y/site-packages
+ENV PYTHONPATH="/usr/local/lib/python3.12/site-packages:/usr/local/lib/python3.11/site-packages:${PYTHONPATH}"
 
-# NVIDIA vLLM container already has Python 3.12 and vLLM installed
+# vLLM official container already has Python and vLLM installed
 # We just need to set up Dynamo's virtual environment and dependencies
 ARG ARCH_ALT=x86_64
 ENV NIXL_PREFIX=/opt/nvidia/nvda_nixl
@@ -52,11 +51,11 @@ ENV NIXL_LIB_DIR=$NIXL_PREFIX/lib/${ARCH_ALT}-linux-gnu
 ENV NIXL_PLUGIN_DIR=$NIXL_LIB_DIR/plugins
 
 # Install additional dependencies for Dynamo
-# Note: NVIDIA vLLM container already has Python and CUDA tools
+# Note: vLLM official container already has Python and CUDA tools
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        # Python runtime - CRITICAL for virtual environment to work
-        python3.12-dev \
+        # Python dev - CRITICAL for virtual environment and building extensions
+        python3-dev \
         build-essential \
         # jq and curl for polling various endpoints and health checks
         jq \
@@ -73,7 +72,7 @@ RUN apt-get update && \
         ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
-# NVIDIA vLLM container has CUDA already, but ensure CUDA tools are in PATH
+# vLLM official container has CUDA already, but ensure CUDA tools are in PATH
 ENV PATH=/usr/local/cuda/bin:$PATH
 ENV CPATH=/usr/local/cuda/include
 
@@ -88,8 +87,8 @@ ENV PATH=/usr/local/bin/etcd/:/usr/local/cuda/nvvm/bin:/usr/local/cuda/bin:$PATH
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uvx /bin/uvx
 
-# Build UCX and NIXL directly in this stage for CUDA 12.8 support
-# This ensures we get fresh NIXL 0.6.0 with CUDA 12.8 support
+# Build UCX and NIXL directly in this stage for CUDA 12.x support
+# This ensures we get fresh NIXL 0.6.0 compatible with CUDA 12.x
 
 # Build UCX from source
 RUN apt-get update && \
@@ -121,12 +120,13 @@ RUN apt-get update && \
     && cd /usr/local/src \
     && rm -rf ucx
 
-# Build NIXL 0.6.0 from source with CUDA 12.8 support
+# Build NIXL 0.6.0 from source with CUDA 12.x support
 # Build both C++ library and Python wheel
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        meson ninja-build python3-pip \
+        meson ninja-build python3-pip pybind11-dev \
     && rm -rf /var/lib/apt/lists/* \
+    && export PKG_CONFIG_PATH=/usr/local/ucx/lib/pkgconfig:$PKG_CONFIG_PATH \
     && git clone --depth 1 --branch 0.6.0 "https://github.com/ai-dynamo/nixl.git" /opt/nixl \
     && cd /opt/nixl \
     && meson setup build/ --buildtype=release --prefix=$NIXL_PREFIX -Ddisable_gds_backend=true \
@@ -154,16 +154,24 @@ $LD_LIBRARY_PATH
 ### VIRTUAL ENVIRONMENT SETUP ###
 # Note: uv was already copied earlier (needed for building NIXL Python wheel)
 
-# Create Dynamo's virtual environment
-RUN uv venv /opt/dynamo/venv --python 3.12
+# Create Dynamo's virtual environment with system site packages
+# This allows the venv to access vLLM installed in the base image
+# Detect Python version from base image
+RUN PYTHON_VERSION=$(python3 --version | grep -oP '3\.\d+') && \
+    uv venv /opt/dynamo/venv --python $PYTHON_VERSION --system-site-packages
 
 # Install Dynamo dependencies
 # Note: vLLM is available via PYTHONPATH pointing to system Python
-# Note: We copy dynamo wheels from base, but NIXL wheel was built fresh above with CUDA 12.8 support
+# Note: We copy dynamo wheels from base, but NIXL wheel was built fresh above with CUDA 12.x support
 COPY benchmarks/ /opt/dynamo/benchmarks/
 RUN mkdir -p /opt/dynamo/wheelhouse
 COPY --from=dynamo_base /opt/dynamo/wheelhouse/ai_dynamo_runtime*.whl /opt/dynamo/wheelhouse/
 COPY --from=dynamo_base /opt/dynamo/wheelhouse/ai_dynamo*.whl /opt/dynamo/wheelhouse/
+# Install vLLM 0.10.2 from PyPI (base image doesn't have it as importable package)
+# Note: Using 0.10.2 to match DGX-SPARK version (has vllm.logprobs module)
+RUN uv pip install vllm==0.10.2
+
+# Install Dynamo wheels
 RUN uv pip install \
     /opt/dynamo/wheelhouse/ai_dynamo_runtime*.whl \
     /opt/dynamo/wheelhouse/ai_dynamo*any.whl \
@@ -193,8 +201,8 @@ RUN --mount=type=bind,source=./container/launch_message.txt,target=/workspace/la
     echo "cat ~/.launch_screen" >> ~/.bashrc && \
     echo "source $VIRTUAL_ENV/bin/activate" >> ~/.bashrc
 
-ENTRYPOINT ["/opt/nvidia/nvidia_entrypoint.sh"]
-CMD []
+# vLLM official images may not have nvidia_entrypoint.sh, so use default shell
+CMD ["/bin/bash"]
 
 ###########################################################
 ########## Development (run.sh, runs as root user) ########
@@ -260,6 +268,6 @@ COPY --from=dynamo_base /usr/local/cargo /usr/local/cargo
 RUN uv pip install maturin[patchelf] && \
     uv pip install --no-deps -e .
 
-ENTRYPOINT ["/opt/nvidia/nvidia_entrypoint.sh"]
-CMD []
+# vLLM official images may not have nvidia_entrypoint.sh, so use default shell
+CMD ["/bin/bash"]
 
